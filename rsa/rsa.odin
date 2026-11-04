@@ -57,6 +57,8 @@ internal_powmod :: proc (input : []u8, pow : ^big.Int, mod : ^big.Int) -> (resul
     return
 }
 
+// TODO: implement padding
+
 encrypt :: proc (key : ^Key_Public, data : []u8) -> (cipher : []u8) {
     return internal_powmod(data, &key.e, &key.n)
 }
@@ -72,7 +74,7 @@ sign :: proc (key : ^Key_Private, data : []u8) -> (signature : []u8) {
     return internal_powmod(hash, &key.d, &key.n)
 }
 
-sign_raw :: proc (key : ^Key_Private, hash : []u8) -> (signature : []u8) -> {
+sign_raw :: proc (key : ^Key_Private, hash : []u8) -> (signature : []u8) {
     return internal_powmod(hash, &key.d, &key.n)
 }
 
@@ -84,4 +86,48 @@ verify :: proc (key : ^Key_Public, data : []u8, signature : []u8) -> bool {
     defer delete(hash2)
 
     return slice.equal(hash, hash2)
+}
+
+blindGenerate :: proc (key : ^Key_Public) -> (r : big.Int, r1 : big.Int) {
+    g : big.Int
+    defer big.destroy(&g)
+
+    for true {
+        big.internal_random(&r, 2047)
+        big.gcd(&g, &r, &key.n)
+
+        if coprime, _ := big.eq(&g, 1); coprime { break }
+    }
+
+    big.internal_invmod(&r1, &r, &key.n)
+    return
+}
+
+blindMask :: proc (key : ^Key_Public, r : ^big.Int, data : []u8) -> (masked : []u8) {
+    re, data_int, masked_int : big.Int
+    defer big.destroy(&re, &data_int, &masked_int)
+
+    big.internal_powmod(&re, r, &key.e, &key.n)
+    big.int_from_bytes_little(&data_int, data)
+    big.internal_mulmod(&masked_int, &data_int, &re, &key.n)
+
+    size, _ := big.int_to_bytes_size(&masked_int)
+    masked = make([]u8, size)
+    big.int_to_bytes_little(&masked_int, masked)
+
+    return
+}
+
+blindUnmask :: proc (key : ^Key_Public, r1 : ^big.Int, maskedSignature : []u8) -> (signature : []u8) {
+    masked_int, signature_int : big.Int
+    defer big.destroy(&masked_int, &signature_int)
+
+    big.int_from_bytes_little(&masked_int, maskedSignature)
+    big.internal_mulmod(&signature_int, &masked_int, r1, &key.n)
+
+    size, _ := big.int_to_bytes_size(&signature_int)
+    signature = make([]u8, size)
+    big.int_to_bytes_little(&signature_int, signature)
+
+    return
 }
