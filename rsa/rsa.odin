@@ -2,10 +2,15 @@ package rsa
 
 import "core:fmt"
 import "core:slice"
+import "core:mem"
 
 import "core:math/big"
 import "core:math/rand"
 import "core:crypto/hash"
+
+PAD :: 0xac
+MAX_LEN :: 253 // NOTE: just to be safe
+FIXED_EXPONENT :: 65337
 
 Key_Public :: struct {
     n : big.Int,
@@ -20,7 +25,7 @@ Key_Private :: struct {
 keygen :: proc () -> (key_prv : Key_Private, key_pub : Key_Public) {
     p, q, p1, q1, ln : big.Int
     defer big.destroy(&p, &q, &p1, &q1, &ln)
-    big.set(&key_pub.e, 65337)
+    big.set(&key_pub.e, FIXED_EXPONENT)
 
     for {
         big.internal_random_prime(&p, 1024, -1, {})
@@ -57,14 +62,47 @@ internal_powmod :: proc (input : []u8, pow : ^big.Int, mod : ^big.Int) -> (resul
     return
 }
 
-// TODO: implement padding
+encrypt :: proc (key : ^Key_Public, data : []u8) -> (cipher : []u8, ok : bool) {
+    (len(data) < MAX_LEN) or_return
 
-encrypt :: proc (key : ^Key_Public, data : []u8) -> (cipher : []u8) {
-    return internal_powmod(data, &key.e, &key.n)
+    mdata : [dynamic]u8
+    defer delete(mdata)
+
+    append(&mdata, PAD)
+    append(&mdata, cast(u8)len(data))
+    append(&mdata, ..data)
+
+    return internal_powmod(mdata[:], &key.e, &key.n), true
 }
 
-decrypt :: proc (key : ^Key_Private, cipher : []u8) -> (data : []u8) {
-    return internal_powmod(cipher, &key.d, &key.n)
+decrypt :: proc (key : ^Key_Private, cipher : []u8) -> (data : []u8, ok : bool = true) {
+    mdata := internal_powmod(cipher, &key.d, &key.n)
+    defer delete(mdata)
+
+    (len(mdata) >= 2)       or_return
+    (mdata[0] == PAD)       or_return
+    (mdata[1] < MAX_LEN)    or_return
+
+    data = make([]u8, mdata[1])
+    mem.copy(raw_data(data), raw_data(mdata[2:]), len(mdata) - 2)
+
+    return
+}
+
+encrypt_value :: proc (key : ^Key_Public, value : $ty) -> (cipher : []u8, ok : bool) {
+    value := value
+    bytes := slice.bytes_from_ptr(&value, size_of(ty))
+    return encrypt(key, bytes)
+}
+
+decrypt_value :: proc (key : ^Key_Private, cipher : []u8, $ty : typeid) -> (value : ty, ok : bool = true) {
+    data := decrypt(key, cipher) or_return
+    defer delete(data)
+
+    (len(data) == size_of(ty)) or_return
+
+    value = (cast(^ty)raw_data(data))^
+    return
 }
 
 sign :: proc (key : ^Key_Private, data : []u8) -> (signature : []u8) {
