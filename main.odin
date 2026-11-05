@@ -80,12 +80,12 @@ main :: proc () {
     people : []Person = {
         Person{ id = 0, fullname = "Vitalya Gryb", country = .Ukraine, age = 23 },
         Person{ id = 1, fullname = "Svitlana Zhizha", country = .Ukraine, age = 27 },
-        // Person{ id = 2, fullname = "Zheka Zrada", country = .Russia, age = 19 },
-        // Person{ id = 3, fullname = "Grzegorz Brzeczyszczykiewicz", country = .Poland, age = 153 },
-        // Person{ id = 4, fullname = "little boy", country = .Ukraine, age = 4 },
-        // Person{ id = 5, fullname = "Yaroslav Aboba", country = .Ukraine, age = 34 },
-        // Person{ id = 6, fullname = "Vova Ugabuga", country = .Ukraine, age = 7182 },
-        // Person{ id = 7, fullname = "Mariya Kavun", country = .Ukraine, age = 26 },
+        Person{ id = 2, fullname = "Zheka Zrada", country = .Ukraine, age = 19 },
+        Person{ id = 3, fullname = "Grzegorz Brzeczyszczykiewicz", country = .Ukraine, age = 153 },
+        Person{ id = 4, fullname = "little boy", country = .Ukraine, age = 4 },
+        Person{ id = 5, fullname = "Yaroslav Aboba", country = .Ukraine, age = 34 },
+        Person{ id = 6, fullname = "Vova Ugabuga", country = .Ukraine, age = 7182 },
+        Person{ id = 7, fullname = "Mariya Kavun", country = .Ukraine, age = 26 },
     }
 
 
@@ -173,6 +173,21 @@ main :: proc () {
                     candidate_id = ec.candidates[i].id,
                 }
             }
+        }
+
+        // violation: ballot ids not equal
+        violation_duplicatedSetIndex := -1
+        if rand.float32() < 0.5 {
+            violation_duplicatedSetIndex = rand.int_range(0, BALLOT_SET_COUNT)
+
+            for &b in ballotSets[violation_duplicatedSetIndex] {
+                b = Ballot{
+                    ballot_id = rand.uint64(),
+                    candidate_id = 67,
+                }
+            }
+
+            fmt.printfln("!!!VOTER> Altered set %v to have different ids", violation_duplicatedSetIndex)
         }
 
         fmt.printfln("VOTER> Formed %v sets", BALLOT_SET_COUNT)
@@ -311,12 +326,12 @@ main :: proc () {
                 }
 
                 if v.ballot.ballot_id != set_id {
-                    fmt.printfln("EC> DISMISSED: Ballot set must have the same ballot_id across all of its ballots")
+                    fmt.printfln("EC> DISMISSED: Ballot set %v must have the same ballot_id across all of its ballots", si)
                     continue nextPerson
                 }
 
                 if v.ballot.candidate_id != ec.candidates[bi].id {
-                    fmt.printfln("EC> DISMISSED: Ballot set must contain a ballot for each candidate, in order")
+                    fmt.printfln("EC> DISMISSED: Ballot set %v must contain a ballot for each candidate, in order", si)
                     continue nextPerson
                 }
 
@@ -325,7 +340,7 @@ main :: proc () {
                 originalMaskedHash := receivedMaskedHashes[si][bi]
 
                 if !slice.equal(restoredMaskedHash, originalMaskedHash) {
-                    fmt.printfln("EC> DISMISSED: Verification does not match originally sent hash")
+                    fmt.printfln("EC> DISMISSED: Verification for set %v does not match originally sent hash", si)
                     continue nextPerson
                 }
             }
@@ -371,18 +386,36 @@ main :: proc () {
             }
         }
 
-        chosenBallotIndex := rand.int_range(0, len(signedBallots))
 
-        chosenBallot := signedBallots[chosenBallotIndex]
-        chosenBallot.ballot = slice.clone(chosenBallot.ballot)
-        chosenBallot.ecSignature = slice.clone(chosenBallot.ecSignature)
+        // violation: sending multiple signed ballots
+        if violation_duplicatedSetIndex != -1 || rand.float32() < 0.15 {
+            for &sb, i in signedBallots {
+                b := sb
+                b.ballot = slice.clone(b.ballot)
+                b.ecSignature = slice.clone(b.ecSignature)
 
-        context.user_ptr = &ballotSets[chosenBallotSetIndex][chosenBallotIndex].candidate_id
-        ci, cf := slice.linear_search_proc(ec.candidates, proc (c : Candidate) -> bool { return (c.id == (cast(^u64)context.user_ptr)^) })
+                context.user_ptr = &ballotSets[chosenBallotSetIndex][i].candidate_id
+                ci, cf := slice.linear_search_proc(ec.candidates, proc (c : Candidate) -> bool { return (c.id == (cast(^u64)context.user_ptr)^) })
 
-        append(&submittedBallots, chosenBallot)
+                append(&submittedBallots, b)
 
-        fmt.printfln("VOTER> Sent a signed ballot voting for %v. Ballot ID: %v", ec.candidates[ci].fullname, ballotSets[chosenBallotSetIndex][chosenBallotIndex].ballot_id)
+                fmt.printfln("!!!VOTER> Sent a signed ballot voting for %v. Ballot ID: %v", ec.candidates[ci].fullname, ballotSets[chosenBallotSetIndex][i].ballot_id)
+            }
+        }
+        else {
+            chosenBallotIndex := rand.int_range(0, len(signedBallots))
+
+            chosenBallot := signedBallots[chosenBallotIndex]
+            chosenBallot.ballot = slice.clone(chosenBallot.ballot)
+            chosenBallot.ecSignature = slice.clone(chosenBallot.ecSignature)
+
+            context.user_ptr = &ballotSets[chosenBallotSetIndex][chosenBallotIndex].candidate_id
+            ci, cf := slice.linear_search_proc(ec.candidates, proc (c : Candidate) -> bool { return (c.id == (cast(^u64)context.user_ptr)^) })
+
+            append(&submittedBallots, chosenBallot)
+
+            fmt.printfln("VOTER> Sent a signed ballot voting for %v. Ballot ID: %v", ec.candidates[ci].fullname, ballotSets[chosenBallotSetIndex][chosenBallotIndex].ballot_id)
+        }
     }
     eqbreak()
     fmt.println()
@@ -401,7 +434,7 @@ main :: proc () {
             fmt.printfln("\tDISMISSED: Failed to decrypt the ballot using SEND private key")
             continue
         }
-        fmt.printfln("\tINFO: Decrypted the ballot")
+        fmt.printfln("\tINFO: Decrypted the ballot with id %v", ballot.ballot_id)
 
         if !rsa.verify_value(&EC_PUBLIC_KEY, ballot, sb.ecSignature) {
             fmt.printfln("\tDISMISSED: Couldn't verify ballot's authenticity from Election Commission")
