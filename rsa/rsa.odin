@@ -116,6 +116,11 @@ sign_raw :: proc (key : ^Key_Private, hash : []u8) -> (signature : []u8) {
     return internal_powmod(hash, &key.d, &key.n)
 }
 
+sign_value :: proc (key : ^Key_Private, value : $ty) -> (signature : []u8) {
+    value := value
+    return sign(key, slice.bytes_from_ptr(&value, size_of(ty)))
+}
+
 verify :: proc (key : ^Key_Public, data : []u8, signature : []u8) -> bool {
     hash := hash.hash_bytes(.SHA256, data)
     defer delete(hash)
@@ -124,6 +129,11 @@ verify :: proc (key : ^Key_Public, data : []u8, signature : []u8) -> bool {
     defer delete(hash2)
 
     return slice.equal(hash, hash2)
+}
+
+verify_value :: proc (key : ^Key_Public, value : $ty, signature : []u8) -> bool {
+    value := value
+    return verify(key, slice.bytes_from_ptr(&value, size_of(ty)), signature)
 }
 
 blindGenerate :: proc (key : ^Key_Public) -> (r : big.Int, r1 : big.Int) {
