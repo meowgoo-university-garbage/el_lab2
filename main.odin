@@ -45,6 +45,9 @@ ElectionCommission :: struct {
 
     key_prv : rsa.Key_Private,
     key_pub : rsa.Key_Public,
+
+    send_key_prv : rsa.Key_Private,
+    send_key_pub : rsa.Key_Public,
 }
 
 Ballot :: struct {
@@ -65,8 +68,12 @@ BallotHashVerification :: struct {
 }
 
 SignedBallot :: struct {
-    ballot : Ballot,
+    ballot : []u8,
     ecSignature : []u8,
+}
+
+eqbreak :: proc () {
+    fmt.println("==============================================================")
 }
 
 main :: proc () {
@@ -126,9 +133,11 @@ main :: proc () {
     }
 
     ec.key_prv, ec.key_pub = rsa.keygen()
-    fmt.printfln("Generated private key for ELECTION COMMISSION")
+    ec.send_key_prv, ec.send_key_pub = rsa.keygen()
+    fmt.printfln("Generated private keys for signing and sending for ELECTION COMMISSION")
     
     EC_PUBLIC_KEY := ec.key_pub
+    EC_SEND_PUBLIC_KEY := ec.send_key_pub
     fmt.println()
 
 
@@ -144,6 +153,15 @@ main :: proc () {
     fmt.printfln("VOTING STARTED")
     submittedBallots : [dynamic]SignedBallot
     nextPerson: for &p in people {
+        eqbreak()
+
+        {
+            context.user_ptr = &p.id
+            pi, _ := slice.linear_search_proc(people, proc (p : Person) -> bool { return (p.id == (cast(^u64)context.user_ptr)^) })
+
+            fmt.printfln("VOTER> Ballot request by %v", people[pi].fullname)
+        }
+
         ballotSets : [BALLOT_SET_COUNT][CANDIDATE_COUNT]Ballot
 
         for &s in ballotSets {
@@ -157,8 +175,10 @@ main :: proc () {
             }
         }
 
+        fmt.printfln("VOTER> Formed %v sets", BALLOT_SET_COUNT)
+
         hashes : [BALLOT_SET_COUNT][CANDIDATE_COUNT]BallotHash
-        mashedHashes : [BALLOT_SET_COUNT][CANDIDATE_COUNT][]u8
+        maskedHashes : [BALLOT_SET_COUNT][CANDIDATE_COUNT][]u8
         messageBlob : [dynamic]u8
         defer delete(messageBlob)
 
@@ -185,37 +205,42 @@ main :: proc () {
                     blind = r,
                     unblind = r1,
                 }
-                mashedHashes[si][bi] = maskedHash
+                maskedHashes[si][bi] = maskedHash
                 append(&messageBlob, ..maskedHash)
             }
         }
+
+        fmt.printfln("VOTER> Generated masked hashes for all ballot sets")
 
         signature := rsa.sign(&p.key_prv, messageBlob[:])
         claimedVoterId := p.id
 
 
+        fmt.printfln("VOTER -> EC> Sending (masked hashes, voter signature, voter id) to election commission")
 
 
         // ELECTION COMMISION
-        receivedMaskedHashes := mashedHashes
+        receivedMaskedHashes := maskedHashes
         receivedSignature := signature
         receivedVoterId := claimedVoterId
+
+        fmt.printfln("EC> Received voter's request")
 
         context.user_ptr = &receivedVoterId
         pi, _ := slice.linear_search_proc(people, proc (p : Person) -> bool { return (p.id == (cast(^u64)context.user_ptr)^) })
 
-        fmt.printfln("\tINFO: Request from claimed voter: %v", people[pi].fullname)
+        fmt.printfln("EC> Request from claimed voter: %v", people[pi].fullname)
 
         context.user_ptr = &receivedVoterId
         vi, vf := slice.linear_search_proc(voters[:], proc (v : Voter) -> bool { return (v.id == (cast(^u64)context.user_ptr)^) })
 
         if !vf {
-            fmt.printfln("\tDISMISSED: %v is not eligible for voting", people[pi].fullname)
+            fmt.printfln("EC> DISMISSED: %v is not eligible for voting", people[pi].fullname)
             continue nextPerson
         }
 
         if voters[vi].alreadyVoted {
-            fmt.printfln("\tDISMISSED: %v has already received their signed ballot set", people[pi].fullname)
+            fmt.printfln("EC> DISMISSED: %v has already received their signed ballot set", people[pi].fullname)
             continue nextPerson
         }
 
@@ -233,20 +258,26 @@ main :: proc () {
         }
 
         if !rsa.verify(&voters[vi].key_pub, restoredMessageBlob[:], receivedSignature) {
-            fmt.printfln("\tDISMISSED: couldn't verify request's authenticity")
+            fmt.printfln("EC> DISMISSED: couldn't verify request's authenticity")
             continue nextPerson
         }
         else {
-            fmt.printfln("\tINFO: verified request's authenticity")
+            fmt.printfln("EC> verified request's authenticity")
         }
 
         ecChosenBallotSetIndex := rand.int_range(0, BALLOT_SET_COUNT)
+
+        fmt.printfln("EC> Voter's request is valid, all ballot sets except %v must now be verified", ecChosenBallotSetIndex)
+
+        fmt.printfln("EC -> VOTER> Sending (chosen ballot set index) to the voter")
 
 
 
 
         // BACK TO VOTER
         chosenBallotSetIndex := ecChosenBallotSetIndex
+
+        fmt.printfln("VOTER> Received ballot set index %v", chosenBallotSetIndex)
 
         verification : [BALLOT_SET_COUNT][CANDIDATE_COUNT]BallotHashVerification
         for &s, si in hashes {
@@ -260,11 +291,14 @@ main :: proc () {
             }
         }
 
+        fmt.printfln("VOTER> Packed all requested verification info")
 
+        fmt.printfln("VOTER -> EC> Sending (original ballots, original blind multipliers) to election commission")
 
         // BACK TO ELECTION COMMISSION
 
         receivedVerification := verification
+        fmt.printfln("EC> Received voter's verification data")
 
         for &s, si in receivedVerification {
             if si == ecChosenBallotSetIndex { continue }
@@ -277,12 +311,12 @@ main :: proc () {
                 }
 
                 if v.ballot.ballot_id != set_id {
-                    fmt.printfln("\tDISMISSED: Ballot set must have the same ballot_id across all of its ballots")
+                    fmt.printfln("EC> DISMISSED: Ballot set must have the same ballot_id across all of its ballots")
                     continue nextPerson
                 }
 
                 if v.ballot.candidate_id != ec.candidates[bi].id {
-                    fmt.printfln("\tDISMISSED: Ballot set must contain a ballot for each candidate, in order")
+                    fmt.printfln("EC> DISMISSED: Ballot set must contain a ballot for each candidate, in order")
                     continue nextPerson
                 }
 
@@ -291,13 +325,13 @@ main :: proc () {
                 originalMaskedHash := receivedMaskedHashes[si][bi]
 
                 if !slice.equal(restoredMaskedHash, originalMaskedHash) {
-                    fmt.printfln("\tDISMISSED: Verification does not match originally sent hash")
+                    fmt.printfln("EC> DISMISSED: Verification does not match originally sent hash")
                     continue nextPerson
                 }
             }
         }
 
-        fmt.printfln("\tINFO: Received ballot sets match previously sent hashes, guess it's all fine")
+        fmt.printfln("EC> Received ballot sets match previously sent hashes, guess it's all fine")
 
         signaturesForMaskedHashes : [CANDIDATE_COUNT][]u8
         defer for &s in signaturesForMaskedHashes { delete(s) }
@@ -308,10 +342,14 @@ main :: proc () {
 
         voters[vi].alreadyVoted = true
 
+        fmt.printfln("EC> Generated signatures for all ballots of the chosen set, tracked the voter")
+
+        fmt.printfln("EC -> VOTER> Sending signatures to the voter")
 
 
         // BACK TO THE VOTER FOR THE FINAL TIME
         receivedSignaturesForMaskedHashes := signaturesForMaskedHashes
+        fmt.printfln("VOTER> Received masked signatures from the election commission")
 
         signaturesForHashes : [CANDIDATE_COUNT][]u8
         defer for &s in signaturesForHashes { delete(s) }
@@ -320,18 +358,33 @@ main :: proc () {
             signaturesForHashes[i] = rsa.blindUnmask(&EC_PUBLIC_KEY, &hashes[chosenBallotSetIndex][i].unblind, s)
         }
 
+        fmt.printfln("VOTER> Unmasked all received signatures")
+
         signedBallots : [CANDIDATE_COUNT]SignedBallot
+        defer for &sb in signedBallots { delete(sb.ballot) }
         for &sb, i in signedBallots {
+            e, _ := rsa.encrypt_value(&EC_SEND_PUBLIC_KEY, ballotSets[chosenBallotSetIndex][i])
+
             sb = SignedBallot{
-                ballot = ballotSets[chosenBallotSetIndex][i],
+                ballot = e,
                 ecSignature = signaturesForHashes[i],
             }
         }
 
-        chosenBallot := rand.choice(signedBallots[:])
+        chosenBallotIndex := rand.int_range(0, len(signedBallots))
+
+        chosenBallot := signedBallots[chosenBallotIndex]
+        chosenBallot.ballot = slice.clone(chosenBallot.ballot)
         chosenBallot.ecSignature = slice.clone(chosenBallot.ecSignature)
+
+        context.user_ptr = &ballotSets[chosenBallotSetIndex][chosenBallotIndex].candidate_id
+        ci, cf := slice.linear_search_proc(ec.candidates, proc (c : Candidate) -> bool { return (c.id == (cast(^u64)context.user_ptr)^) })
+
         append(&submittedBallots, chosenBallot)
+
+        fmt.printfln("VOTER> Sent a signed ballot voting for %v. Ballot ID: %v", ec.candidates[ci].fullname, ballotSets[chosenBallotSetIndex][chosenBallotIndex].ballot_id)
     }
+    eqbreak()
     fmt.println()
 
 
@@ -341,30 +394,42 @@ main :: proc () {
     trackedIds : map[u64](struct{})
     validBallots : [dynamic]Ballot
     for &sb, i in submittedBallots {
-        if !rsa.verify_value(&EC_PUBLIC_KEY, sb.ballot, sb.ecSignature) {
+        fmt.printfln("Processing ballot #%v", i)
+
+        ballot, result := rsa.decrypt_value(&ec.send_key_prv, sb.ballot, Ballot)
+        if !result {
+            fmt.printfln("\tDISMISSED: Failed to decrypt the ballot using SEND private key")
+            continue
+        }
+        fmt.printfln("\tINFO: Decrypted the ballot")
+
+        if !rsa.verify_value(&EC_PUBLIC_KEY, ballot, sb.ecSignature) {
             fmt.printfln("\tDISMISSED: Couldn't verify ballot's authenticity from Election Commission")
             continue
         }
+        fmt.printfln("\tINFO: Verified Election Commission's signature")
 
-        _, ok := trackedIds[sb.ballot.ballot_id]
+        _, ok := trackedIds[ballot.ballot_id]
         if ok {
             fmt.printfln("\tDISMISSED: Ballot with the same id received twice")
             continue
         }
 
-        context.user_ptr = &sb.ballot.candidate_id
+        context.user_ptr = &ballot.candidate_id
         ci, cf := slice.linear_search_proc(ec.candidates, proc (c : Candidate) -> bool { return (c.id == (cast(^u64)context.user_ptr)^) })
 
         if !cf {
-            fmt.printfln("\tDISMISSED: candidate with id %v doesn't exist", sb.ballot.candidate_id)
+            fmt.printfln("\tDISMISSED: candidate with id %v doesn't exist", ballot.candidate_id)
             continue
         }
 
         fmt.printfln("\tINFO: Chosen candidate: %v", ec.candidates[ci].fullname)
 
-        trackedIds[sb.ballot.ballot_id] = {}
-        append(&validBallots, sb.ballot)
+        trackedIds[ballot.ballot_id] = {}
+        append(&validBallots, ballot)
         ec.candidates[ci].votes += 1
+
+        fmt.printfln("\tVote counted")
     }
     fmt.println()
 
@@ -373,6 +438,15 @@ main :: proc () {
     fmt.printfln("ELECTION RESULTS:")
     for c in ec.candidates {
         fmt.printfln("%v:\n\t%v votes", c.fullname, c.votes)
+    }
+    fmt.println()
+
+    fmt.printfln("BALLOTS:")
+    for &vb in validBallots {
+        context.user_ptr = &vb.candidate_id
+        ci, _ := slice.linear_search_proc(ec.candidates, proc (c : Candidate) -> bool { return (c.id == (cast(^u64)context.user_ptr)^) })
+
+        fmt.printfln("\tID: %v | Candidate: %v", vb.ballot_id, ec.candidates[ci].fullname)
     }
 
 
